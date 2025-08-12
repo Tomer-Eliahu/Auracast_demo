@@ -8,6 +8,7 @@
         "gpio.h": "c",
         "util.h": "c",
         "algorithm": "c",
-        "array": "c"
+        "array": "c",
+        "stdint.h": "c"
     }
 }

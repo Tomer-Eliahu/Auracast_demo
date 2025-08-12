@@ -1,6 +1,9 @@
-/*
+/* This file is based on the periodic_sync sample: 
+ * https://github.com/nrfconnect/sdk-zephyr/blob/main/samples/bluetooth/periodic_sync/src/main.c
+ * which is subject to the following License:
+ * 
  * Copyright (c) 2020-2024 Nordic Semiconductor ASA
- *
+ * 
  * SPDX-License-Identifier: Apache-2.0
  */
 #include <stdint.h>
