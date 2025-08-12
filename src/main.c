@@ -19,6 +19,7 @@
 
 ///Change this to your Auracast Broadcast name
 #define BROADCAST_NAME "Tomer"
+//Remeber to use COM8 to see logs.
 
 static bool         per_adv_found;
 static bt_addr_le_t per_addr;
@@ -82,6 +83,7 @@ static bool data_cb(struct bt_data *data, void *user_data)
 		len = MIN(data->data_len, NAME_LEN - 1);
 		memcpy(name, data->data, len);
 		name[len] = '\0';
+		//printk("The name is %s \n", name);
 		return false;
 	default:
 		return true;
@@ -110,23 +112,27 @@ static void scan_recv(const struct bt_le_scan_recv_info *info,
 	//This function modifies name which is why we need to reset it above.
 	bt_data_parse(buf, data_cb, name);
 	
-	bool found_auracast= strcmp(name, BROADCAST_NAME);
+	bool found_auracast= !strcmp(name, BROADCAST_NAME);
 	
 	if (found_auracast) {
-		printk("Found AURACAST!\n");
-		
-		bt_addr_le_to_str(info->addr, le_addr, sizeof(le_addr));
-		printk("[DEVICE]: %s, AD evt type %u, Tx Pwr: %i, RSSI %i Broadcast name: %s "
-			"C:%u S:%u D:%u SR:%u E:%u Prim: %s, Secn: %s, "
-			"Interval: 0x%04x (%u ms), SID: %u\n",
-			le_addr, info->adv_type, info->tx_power, info->rssi, name,
-			(info->adv_props & BT_GAP_ADV_PROP_CONNECTABLE) != 0,
-			(info->adv_props & BT_GAP_ADV_PROP_SCANNABLE) != 0,
-			(info->adv_props & BT_GAP_ADV_PROP_DIRECTED) != 0,
-			(info->adv_props & BT_GAP_ADV_PROP_SCAN_RESPONSE) != 0,
-			(info->adv_props & BT_GAP_ADV_PROP_EXT_ADV) != 0,
-			phy2str(info->primary_phy), phy2str(info->secondary_phy),
-			info->interval, info->interval * 5 / 4, info->sid);
+
+		if(!per_adv_found) //To avoid seeing these over and over
+		{
+			printk("Found AURACAST!\n");
+			
+			bt_addr_le_to_str(info->addr, le_addr, sizeof(le_addr));
+			printk("[DEVICE]: %s, AD evt type %u, Tx Pwr: %i, RSSI %i Broadcast name: %s "
+				"C:%u S:%u D:%u SR:%u E:%u Prim: %s, Secn: %s, "
+				"Interval: 0x%04x (%u ms), SID: %u\n",
+				le_addr, info->adv_type, info->tx_power, info->rssi, name,
+				(info->adv_props & BT_GAP_ADV_PROP_CONNECTABLE) != 0,
+				(info->adv_props & BT_GAP_ADV_PROP_SCANNABLE) != 0,
+				(info->adv_props & BT_GAP_ADV_PROP_DIRECTED) != 0,
+				(info->adv_props & BT_GAP_ADV_PROP_SCAN_RESPONSE) != 0,
+				(info->adv_props & BT_GAP_ADV_PROP_EXT_ADV) != 0,
+				phy2str(info->primary_phy), phy2str(info->secondary_phy),
+				info->interval, info->interval * 5 / 4, info->sid);
+		}
 
 		if (!per_adv_found && info->interval) {
 			uint32_t interval_us;
