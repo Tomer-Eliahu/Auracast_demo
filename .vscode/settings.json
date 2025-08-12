@@ -1,0 +1,11 @@
+{
+    "C_Cpp.default.configurationProvider": "nordic-semiconductor.nrf-connect",
+    "files.associations": {
+        "stdio.h": "c",
+        "kernel.h": "c",
+        "printk.h": "c",
+        "gap.h": "c",
+        "gpio.h": "c",
+        "util.h": "c"
+    }
+}
