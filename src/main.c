@@ -20,6 +20,12 @@
 ///Change this to your Auracast Broadcast name
 #define BROADCAST_NAME "Tomer"
 //Remeber to use COM8 to see logs.
+#define RAW_PERIODIC_DATA_MAX_LEN 80
+
+static uint8_t raw_periodic_data[RAW_PERIODIC_DATA_MAX_LEN] = {0}; //TODO: maybe get rid if not needed.
+
+static bool         got_per_adv_data = false;
+
 
 static bool         per_adv_found;
 static bt_addr_le_t per_addr;
@@ -196,22 +202,47 @@ static void recv_cb(struct bt_le_per_adv_sync *sync,
 		    const struct bt_le_per_adv_sync_recv_info *info,
 		    struct net_buf_simple *buf)
 {
-	char le_addr[BT_ADDR_LE_STR_LEN];
-	char data_str[129];
+	if (!got_per_adv_data) {
+		
+	
+		char le_addr[BT_ADDR_LE_STR_LEN];
+		
 
-	bt_addr_le_to_str(info->addr, le_addr, sizeof(le_addr));
-	bin2hex(buf->data, buf->len, data_str, sizeof(data_str));
+		bt_addr_le_to_str(info->addr, le_addr, sizeof(le_addr));
+		//bin2hex(buf->data, buf->len, data_str, sizeof(data_str));
 
-	printk("PER_ADV_SYNC[%u]: [DEVICE]: %s, tx_power %i, "
-	       "RSSI %i, CTE %u, data length %u, data: %s\n",
-	       bt_le_per_adv_sync_get_index(sync), le_addr, info->tx_power,
-	       info->rssi, info->cte_type, buf->len, data_str);
+		printk("PER_ADV_SYNC[%u]: [DEVICE]: %s, tx_power %i, "
+			"RSSI %i, CTE %u, data length %u, data: [",
+			bt_le_per_adv_sync_get_index(sync), le_addr, info->tx_power,
+			info->rssi, info->cte_type, buf->len);
+		
+		uint8_t *raw_data;
+		uint16_t remaining;
+		//Note the 3 * here so that we don't overflow the buffer. 
+		//The +3 accounts for the NULL terminating and the end "]\n"
+		char out[3 * RAW_PERIODIC_DATA_MAX_LEN +3], *put = out; 
+		for (remaining = buf->len, raw_data =raw_periodic_data; remaining>0; remaining--, raw_data++)
+		{
+			
+			uint8_t byte = net_buf_simple_pull_u8(buf);
+			*raw_data = byte;
+			put += sprintf(put, "%i, ", byte);
+			
+		}
+		strcat(put, "]\n");
+		printk("%s", out);
+
+
+		got_per_adv_data = true;
+	}
+		
 }
 
 static struct bt_le_per_adv_sync_cb sync_callbacks = {
 	.synced = sync_cb,
 	.term = term_cb,
 	.recv = recv_cb
+	//.biginfo = TODO!
 };
 
 int main(void)

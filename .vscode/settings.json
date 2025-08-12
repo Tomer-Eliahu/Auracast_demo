@@ -6,6 +6,8 @@
         "printk.h": "c",
         "gap.h": "c",
         "gpio.h": "c",
-        "util.h": "c"
+        "util.h": "c",
+        "algorithm": "c",
+        "array": "c"
     }
 }
