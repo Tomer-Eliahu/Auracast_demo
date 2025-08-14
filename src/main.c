@@ -300,10 +300,13 @@ static void term_cb(struct bt_le_per_adv_sync *sync,
 /// 2, 1, 8, 2, 2, 1, 3, 4, 120, 0 = Codec-specific configuration parameters for the [ith] subgroup
 /// Based on 6.12.5 Codec_Specific_Configuration LTV structures in BT assigned numbers, here this is:
 /// 8=  48000 Hz Sampling Frequency, 1 =  Use 10 ms codec frames, 
-/// 120 = Number of octets used per codec frame
+/// 120 = Number of octets used per codec frame.
+/// Note this results in a bitrate of 96 kbps (see Table 3.17 here:
+/// https://www.bluetooth.com/wp-content/uploads/Files/Specification/HTML/16212-BAP-html5/out/en/index-en.html#UUID-90a900d2-de3f-acff-c7ff-d9961e742b4a).
+///
 /// 23 = Metadata length for the subgroup (series of LTV values)
-///3, 2, 4, 0 = Streaming audio context is media
-//8, 3, 85, 110, 107, 110, 111, 119, 110, = Program info (Title and/or summary of Audio Stream content: UTF-8 format)
+/// 3, 2, 4, 0 = Streaming audio context is media
+/// 8, 3, 85, 110, 107, 110, 111, 119, 110, = Program info (Title and/or summary of Audio Stream content: UTF-8 format)
 /// Which here is "Unknown"
 /// 2, 5, 2, = CCID (The Content Control ID) value 2 
 ///(The ID of the content control service instance containing this characteristic.)
@@ -316,7 +319,7 @@ static void term_cb(struct bt_le_per_adv_sync *sync,
 /// 	6 = Length of the Codec_Specific_Configuration 
 ///		5, 3, 1, 0, 0, 0, = Audio_Channel_Allocation (4-octet bitfield of Audio Location values) so here it is 0b1.
 /// 	Which is Front Left
-
+///
 /// 2= BIS index
 /// For BIS[2]:
 /// 	6 = Length of the Codec_Specific_Configuration
