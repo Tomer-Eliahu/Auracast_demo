@@ -71,6 +71,59 @@ static void blink_timeout(struct k_work *work)
 //                           Length, AD Type (22; 0x16 in hex)--Service Data - 16-bit UUID,
 // 
 
+	//The Broadcast Audio Announcement Service UUID is 0x1852
+	// which is 0b11000 01010010 which is 24 82 -- SO you get the UUID transimetted backgwards!
+	//I think this means it is trasmitted LSB (least significant bit) first.
+	//See  3.7.2.1. in  BAP to see where this is specified.
+
+	//So the second UUID is 86 24 -- flip order 24 86 -- 0b11000 01010110 -- 0b1100001010110 
+	//Which is 0x1856 which is the UUID for Public Broadcast Announcement service
+
+	//The public broadcast Annoucement is detailed in section 4 of PBP.
+	// so 5 is the length, 22 is the type, 86 24 is the uuid.
+	//4 is the public bordcast annoucement features and 0 is the metadata length.
+	//We need to look at 4 bitwise. 4 is 0b100. Since all but the first 3 bits are RFU
+	//Reserved for future use. I am guessing the bits are transmitted in reverse order, that is 
+	//it is trasmitted LSB (least significant bit) first.
+	//so that bit 0 is 0, bit 1 is 0, and bit 2 is 1.
+	//Which makes sense as that would mean no encryption,
+	//Standard Quality Public Broadcast Audio has no configuration present,
+	//while High Quality Public Broadcast Audio DOES HAVE 
+	//0b1 = Audio configuration present.
+
+	//so 6 is the Length, 48 must be the broadcast name type (from assigned numbers
+	//48 is 0x30 and 0x30=Broadcast_Name), and the reminder is the value
+	//the Name of the broadcast!
+
+	//From reading 4.3 in PBP:
+	/*If a PBS transmits the Public Broadcast Announcement with bit 2 of the 
+	Public Broadcast Announcement features field set to a value of 0b1 
+	(to show High Quality Public Broadcast Audio), 
+	the advertising set used to transmit the Public Broadcast Announcement (i.e this extended advertising data)
+	points to a BIG, 
+	which shall include at least one broadcast Audio Stream configuration setting listed in Table 4.2. */
+
+	//CRITICAL NOTE: I think the only piece of data that can be used to point to something here
+	//MUST BE the broadcast id!
+
+	/*From BAP: 3.7.2.1.1. Broadcast_ID:
+	For each BIG, the Broadcast Source shall generate a Broadcast_ID according to the requirements 
+	for random number generation as defined in Volume 3, Part H, Section 2 in [1]. 
+	The Broadcast_ID shall not change for the lifetime of the BIG. */
+
+
+
+	//From the supplement to the Bluetooth core specification 
+	//(https://www.bluetooth.com/specifications/specs/core-specification-supplement-2/) section 1.11
+	//This means:
+	//
+	//Data Type: «Service Data - 16 bit UUID»
+	//UUID16, which may be followed by struct
+	//Description:
+	// The first value contains the 16 bit Service UUID. Any
+	// remainder contains additional service data.
+
+
 
 /// @brief This is called on each Length Type Value triplet In a particular scan result.
 /// When it returns true the parsing continues. When it returns false the parsing stops.
@@ -201,6 +254,76 @@ static void term_cb(struct bt_le_per_adv_sync *sync,
 	k_sem_give(&sem_per_sync_lost);
 }
 
+//Note that using the "Improve compatibility" option for the Auracast broadcast still gives
+// us 2 separate left and right streams as opposed to 1 mono stream.
+
+//So what we do is pick 1 BIS (like left ear) 
+//and just get that one (because our headphone out is only capable of mono
+//audio ).
+
+//OR we can sync to BOTH BIS (different than the nordic example-- there you pick just 1 BIS),
+//and downmix (or combine) the stereo into mono by doing
+// Mono_Sample = (Left_Sample + Right_Sample) / 2
+//If more details are needed see private notes. Our APP core has a FPU so we could do this.
+//Yes, it is possible to convert a stereo audio stream to mono while both streams are LC3 encoded. 
+//This involves decoding the stereo LC3 stream, merging the left and right channels into a single mono channel.
+//Note you have to decode first. Also note this requires being in sync with 2 ISO streams at the same time.
+// Base on https://github.com/zephyrproject-rtos/zephyr/blob/main/samples/bluetooth/iso_receive/src/main.c
+// It seems like you can defintely sync to multiple BISs at once.
+
+/// @brief The callback on receving periodic adv report.
+/// @param sync 
+/// @param info 
+/// @param buf
+/// @remarks 
+///We got output: 
+/// PER_ADV_SYNC[0]: [DEVICE]: 29:41:D7:F3:46:F9 (random), 
+/// tx_power 127, RSSI -38, CTE 0, 
+/// data length 65, 
+/// data: [64, 22, 81, 24, 64, 156, 0, 1, 2, 6, 0, 0, 0, 0, 10, 2, 1, 8, 2, 2, 1, 3, 4, 
+/// 	120, 0, 23, 3, 2, 4, 0, 8, 3, 85, 110, 107, 110, 111, 119, 110, 2, 5, 2, 6, 11, 84, 
+/// 	111, 109, 101, 114, 1, 6, 5, 3, 1, 0, 0, 0, 2, 6, 5, 3, 2, 0, 0, 0, ]
+///We can parse this according
+///to https://www.bluetooth.com/wp-content/uploads/Files/Specification/HTML/16212-BAP-html5/out/en/index-en.html#UUID-8810d9ca-716a-9902-b58b-8d35b5e9a149
+/// Here is the parsing result (remember Bluetooth provides data in LTV triplets)
+/// 22= 0x16 =16 bit service uuid
+/// so we read the next two as 24 81 (Notice the order swap)
+/// which corresponds to the following 16bits: 0001100001010001 = 0x1851 
+/// which is Basic Audio Announcement Service
+/// 64, 156, 0 = presentation delay in µs. 3 octets in binary (Remember LSB first) 0b1001110001000000 = 40000 in decimal.
+/// So our presentation delay is 40ms.
+///
+/// 1 = number of subgroups
+/// 2 = number of BIS
+/// 6 = Coding_Format (part of codec info) which in this case is LC3. The following 0, 0, 0, 0, are irrelevant here.
+/// 10 = Length of the Codec_Specific_Configuration for the [ith] subgroup
+/// 2, 1, 8, 2, 2, 1, 3, 4, 120, 0 = Codec-specific configuration parameters for the [ith] subgroup
+/// Based on 6.12.5 Codec_Specific_Configuration LTV structures in BT assigned numbers, here this is:
+/// 8=  48000 Hz Sampling Frequency, 1 =  Use 10 ms codec frames, 
+/// 120 = Number of octets used per codec frame
+/// 23 = Metadata length for the subgroup (series of LTV values)
+///3, 2, 4, 0 = Streaming audio context is media
+//8, 3, 85, 110, 107, 110, 111, 119, 110, = Program info (Title and/or summary of Audio Stream content: UTF-8 format)
+/// Which here is "Unknown"
+/// 2, 5, 2, = CCID (The Content Control ID) value 2 
+///(The ID of the content control service instance containing this characteristic.)
+///
+/// 6, 11, 84, 111, 109, 101, 114, = The UTF-8 string of the Broadcast_Name AD Type. 
+///This is simply our broadcast name (here "Tomer").
+///
+/// 1 = BIS index
+/// For BIS[1]:
+/// 	6 = Length of the Codec_Specific_Configuration 
+///		5, 3, 1, 0, 0, 0, = Audio_Channel_Allocation (4-octet bitfield of Audio Location values) so here it is 0b1.
+/// 	Which is Front Left
+
+/// 2= BIS index
+/// For BIS[2]:
+/// 	6 = Length of the Codec_Specific_Configuration
+///     5, 3, 2, 0, 0, 0, = Audio_Channel_Allocation (4-octet bitfield of Audio Location values) so here it is 0b10.
+/// 	Which is Front Right.
+
+//TODO: MAYBE USE bt_bap_base_get_base_from_ad from #include <zephyr/bluetooth/audio/bap.h>
 static void recv_cb(struct bt_le_per_adv_sync *sync,
 		    const struct bt_le_per_adv_sync_recv_info *info,
 		    struct net_buf_simple *buf)
