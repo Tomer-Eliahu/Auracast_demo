@@ -20,6 +20,10 @@
 #include <zephyr/bluetooth/bluetooth.h>
 #include <zephyr/sys/util.h>
 
+#include <zephyr/bluetooth/iso.h>
+
+#include <zephyr/bluetooth/audio/bap.h> //Get rid off if not needed
+
 #define TIMEOUT_SYNC_CREATE K_SECONDS(10)
 #define NAME_LEN            30
 
@@ -27,6 +31,11 @@
 #define BROADCAST_NAME "Tomer"
 //Remeber to use COM8 to see logs.
 #define RAW_PERIODIC_DATA_MAX_LEN 80
+#define BIS_ISO_CHAN_COUNT 2
+//originally 360000
+#define CONFIG_ISO_PRINT_INTERVAL 360000000000000
+static K_SEM_DEFINE(sem_big_sync, 0, BIS_ISO_CHAN_COUNT);
+static K_SEM_DEFINE(sem_big_sync_lost, 0, BIS_ISO_CHAN_COUNT);
 
 static uint8_t raw_periodic_data[RAW_PERIODIC_DATA_MAX_LEN] = {0}; //TODO: maybe get rid if not needed.
 
@@ -43,7 +52,6 @@ static K_SEM_DEFINE(sem_per_adv, 0, 1);
 static K_SEM_DEFINE(sem_per_sync, 0, 1);
 static K_SEM_DEFINE(sem_per_sync_lost, 0, 1);
 
-//static K_SEM_DEFINE(sem_auracast_found, 0, 1); //found our auracast broadcast
 
 /* The devicetree node identifier for the "led0" alias. */
 #define LED0_NODE DT_ALIAS(led0)
@@ -267,7 +275,7 @@ static void term_cb(struct bt_le_per_adv_sync *sync,
 //and just get that one (because our headphone out is only capable of mono
 //audio ).
 
-//OR we can sync to BOTH BIS (different than the nordic example-- there you pick just 1 BIS),
+//OR we can sync to BOTH BIS (The nordic example just added this today),
 //and downmix (or combine) the stereo into mono by doing
 // Mono_Sample = (Left_Sample + Right_Sample) / 2
 //If more details are needed see private notes. Our APP core has a FPU so we could do this.
@@ -276,6 +284,13 @@ static void term_cb(struct bt_le_per_adv_sync *sync,
 //Note you have to decode first. Also note this requires being in sync with 2 ISO streams at the same time.
 // Base on https://github.com/zephyrproject-rtos/zephyr/blob/main/samples/bluetooth/iso_receive/src/main.c
 // It seems like you can defintely sync to multiple BISs at once.
+//Note: to synchornize BISs to each other just match together the SDU Synchronization Reference 
+//given on each audio frame from each BIS (I think; That is what I figured based on section 7 of BAP).
+//IMPORTANT: WE can get the number of BISs from BigInfo report (which we also get when we get 
+//periodic adv report). Rember BIS indexes start from 1.
+
+//TODO: maybe make this into a conditional compliation option: either recieve just LEFT ear BIS
+//OR #ifdef something, than convert stereo into mono.
 
 /// @brief The callback on receving periodic adv report.
 /// @param sync 
@@ -379,7 +394,6 @@ static void biginfo_cb(struct bt_le_per_adv_sync *sync,
 
 	if (!got_big_info)
 	{
-		
 		char le_addr[BT_ADDR_LE_STR_LEN];
 
 		bt_addr_le_to_str(biginfo->addr, le_addr, sizeof(le_addr));
@@ -398,7 +412,12 @@ static void biginfo_cb(struct bt_le_per_adv_sync *sync,
 			biginfo->max_sdu, phy2str(biginfo->phy),
 			biginfo->framing ? "with" : "without",
 			biginfo->encryption ? "" : "not ");
-
+			/*From 4.4.6.5 
+			(https://www.bluetooth.com/wp-content/uploads/Files/Specification/HTML/Core-54/out/en/low-energy-controller/link-layer-specification.html)
+			The Framed parameter of a BIG shall indicate whether all the constituent BISes are framed or unframed. 
+			Framed BIGs shall only use framed BIS Data PDUs to carry data; 
+			unframed BIGs shall only use unframed BIS Data PDUs to carry data.
+			*/
 
 		got_big_info= true;
 	}
@@ -409,6 +428,98 @@ static struct bt_le_per_adv_sync_cb sync_callbacks = {
 	.term = term_cb,
 	.recv = recv_cb,
 	.biginfo = biginfo_cb
+};
+
+///Reproduced here for convenience.
+/// @brief Channel recv callback
+/// @param chan The channel receiving data.
+/// @param buf Buffer containing incoming data.
+/// @param info Pointer to the metadata for the buffer. 
+///The lifetime of the pointer is linked to the lifetime of the net_buf. 
+///Metadata such as sequence number and timestamp can be provided by the bluetooth controller.
+static void iso_recv(struct bt_iso_chan *chan, const struct bt_iso_recv_info *info,
+		struct net_buf *buf)
+{
+	char data_str[128];
+	size_t str_len;
+	uint32_t iso_recv_count = 0; 		
+	
+	//Note the buffer has non-zero length only when the phone is *actually* transmitting sound
+	//(say when a YouTube video plays; If the video is paused, the buffer has length zero again).
+
+	//TODO: CALL A FUNCTION TO PROCESS THE LC3 encoded audio and pass it to the hardware codec
+	//and then to the headphone out.
+
+	if ((iso_recv_count % CONFIG_ISO_PRINT_INTERVAL) == 0) {
+		str_len = bin2hex(buf->data, buf->len, data_str, sizeof(data_str));
+		printk("Incoming data channel %p flags 0x%x seq_num %u ts %u len %u: "
+		       "str_len:%i, data: %s\n", chan, info->flags, info->seq_num,
+		       info->ts, buf->len, str_len, data_str);
+	}
+
+	iso_recv_count++;
+}
+
+static void iso_connected(struct bt_iso_chan *chan)
+{
+	const struct bt_iso_chan_path hci_path = {
+		.pid = BT_ISO_DATA_PATH_HCI,
+		.format = BT_HCI_CODING_FORMAT_TRANSPARENT //changing it to BT_HCI_CODING_FORMAT_LC3 causes errors
+	};
+	int err;
+
+	printk("ISO Channel %p connected\n", chan);
+
+	err = bt_iso_setup_data_path(chan, BT_HCI_DATAPATH_DIR_CTLR_TO_HOST, &hci_path);
+	if (err != 0) {
+		printk("Failed to setup ISO RX data path: %d\n", err);
+		return;
+	}
+
+	k_sem_give(&sem_big_sync);
+}
+
+static void iso_disconnected(struct bt_iso_chan *chan, uint8_t reason)
+{
+	printk("ISO Channel %p disconnected with reason 0x%02x\n",
+	       chan, reason);
+
+	if (reason != BT_HCI_ERR_OP_CANCELLED_BY_HOST) {
+		k_sem_give(&sem_big_sync_lost);
+	}
+}
+
+static struct bt_iso_chan_ops iso_ops = {
+	.recv		= iso_recv,
+	.connected	= iso_connected,
+	.disconnected	= iso_disconnected,
+};
+
+static struct bt_iso_chan_io_qos iso_rx_qos[BIS_ISO_CHAN_COUNT];
+
+static struct bt_iso_chan_qos bis_iso_qos[] = {
+	{ .rx = &iso_rx_qos[0], },
+	{ .rx = &iso_rx_qos[1], },
+};
+
+static struct bt_iso_chan bis_iso_chan[] = {
+	{ .ops = &iso_ops,
+	  .qos = &bis_iso_qos[0], },
+	{ .ops = &iso_ops,
+	  .qos = &bis_iso_qos[1], },
+};
+
+static struct bt_iso_chan *bis[] = {
+	&bis_iso_chan[0],
+	&bis_iso_chan[1],
+};
+
+static struct bt_iso_big_sync_param big_sync_param = {
+	.bis_channels = bis,
+	.num_bis = BIS_ISO_CHAN_COUNT,
+	.bis_bitfield = (BIT_MASK(BIS_ISO_CHAN_COUNT)),
+	.mse = BT_ISO_SYNC_MSE_ANY, /* any number of subevents */
+	.sync_timeout = 100, /* in 10 ms units */
 };
 
 int main(void)
@@ -518,6 +629,37 @@ int main(void)
 		}
 		printk("Periodic sync established.\n");
 
+		printk("Create BIG Sync...\n");
+		struct bt_iso_big *big;
+		err = bt_iso_big_sync(sync, &big_sync_param, &big);
+		if (err) {
+			printk("failed (err %d)\n", err);
+			return 0;
+		}
+		printk("success.\n");
+
+		for (uint8_t chan = 0; chan < BIS_ISO_CHAN_COUNT; chan++) {
+			printk("Waiting for BIG sync chan %u...\n", chan);
+			err = k_sem_take(&sem_big_sync, TIMEOUT_SYNC_CREATE);
+			if (err) {
+				break;
+			}
+			printk("BIG sync chan %u successful.\n", chan);
+		}
+		if (err) {
+			printk("failed (err %d)\n", err);
+
+			printk("BIG Sync Terminate...");
+			err = bt_iso_big_terminate(big);
+			if (err) {
+				printk("failed (err %d)\n", err);
+				return 0;
+			}
+			printk("done.\n");
+			continue;
+		}
+		printk("BIG sync established.\n");
+
 #ifdef CONFIG_PER_BLINK_LED0
 		printk("Stop blinking LED.\n");
 		k_work_cancel_delayable_sync(&blink_work, &work_sync);
@@ -526,6 +668,17 @@ int main(void)
 		led_is_on = true;
 		gpio_pin_set(led.port, led.pin, (int)led_is_on);
 #endif /* CONFIG_PER_BLINK_LED0 */
+
+		for (uint8_t chan = 0; chan < BIS_ISO_CHAN_COUNT; chan++) {
+			printk("Waiting for BIG sync lost chan %u...\n", chan);
+			err = k_sem_take(&sem_big_sync_lost, K_FOREVER);
+			if (err) {
+				printk("failed (err %d)\n", err);
+				return 0;
+			}
+			printk("BIG sync lost chan %u.\n", chan);
+		}
+		printk("BIG sync lost.\n");
 
 		printk("Waiting for periodic sync lost...\n");
 		err = k_sem_take(&sem_per_sync_lost, K_FOREVER);
