@@ -1,6 +1,9 @@
 /* This file is based on the periodic_sync sample: 
  * https://github.com/nrfconnect/sdk-zephyr/blob/main/samples/bluetooth/periodic_sync/src/main.c
- * which is subject to the following License:
+ * and the iso_receive sample:
+ * https://github.com/zephyrproject-rtos/zephyr/blob/main/samples/bluetooth/iso_receive/src/main.c
+ * 
+ * which are subject to the following License:
  * 
  * Copyright (c) 2020-2024 Nordic Semiconductor ASA
  * 
@@ -27,7 +30,8 @@
 
 static uint8_t raw_periodic_data[RAW_PERIODIC_DATA_MAX_LEN] = {0}; //TODO: maybe get rid if not needed.
 
-static bool         got_per_adv_data = false;
+static bool         got_per_adv_data;
+static bool 		got_big_info;
 
 
 static bool         per_adv_found;
@@ -91,9 +95,11 @@ static void blink_timeout(struct k_work *work)
 	//while High Quality Public Broadcast Audio DOES HAVE 
 	//0b1 = Audio configuration present.
 
-	//so 6 is the Length, 48 must be the broadcast name type (from assigned numbers
+	//so 6 is the Length, 48 is the broadcast name type (from assigned numbers
 	//48 is 0x30 and 0x30=Broadcast_Name), and the reminder is the value
-	//the Name of the broadcast!
+	//the name of the broadcast!
+	//Note having the broadcast name here is requried by Bluetooth (see PBP section 5:
+	// https://www.bluetooth.com/wp-content/uploads/Files/Specification/HTML/11452-PBP-html5/out/en/index-en.html#UUID-de267bf3-7adb-d590-1d82-5cc803f2bf51) 
 
 	//From reading 4.3 in PBP:
 	/*If a PBS transmits the Public Broadcast Announcement with bit 2 of the 
@@ -367,11 +373,42 @@ static void recv_cb(struct bt_le_per_adv_sync *sync,
 		
 }
 
+static void biginfo_cb(struct bt_le_per_adv_sync *sync,
+		       const struct bt_iso_biginfo *biginfo)
+{
+
+	if (!got_big_info)
+	{
+		
+		char le_addr[BT_ADDR_LE_STR_LEN];
+
+		bt_addr_le_to_str(biginfo->addr, le_addr, sizeof(le_addr));
+
+		printk("BIG INFO[%u]: [DEVICE]: %s, sid 0x%02x, "
+			"num_bis %u, nse %u, interval 0x%04x (%u ms), "
+			"bn %u, pto %u, irc %u, max_pdu %u, "
+			"sdu_interval %u us, max_sdu %u, phy %s, "
+			"%s framing, %sencrypted\n",
+			bt_le_per_adv_sync_get_index(sync), le_addr, biginfo->sid,
+			biginfo->num_bis, biginfo->sub_evt_count,
+			biginfo->iso_interval,
+			(biginfo->iso_interval * 5 / 4),
+			biginfo->burst_number, biginfo->offset,
+			biginfo->rep_count, biginfo->max_pdu, biginfo->sdu_interval,
+			biginfo->max_sdu, phy2str(biginfo->phy),
+			biginfo->framing ? "with" : "without",
+			biginfo->encryption ? "" : "not ");
+
+
+		got_big_info= true;
+	}
+}
+
 static struct bt_le_per_adv_sync_cb sync_callbacks = {
 	.synced = sync_cb,
 	.term = term_cb,
-	.recv = recv_cb
-	//.biginfo = TODO!
+	.recv = recv_cb,
+	.biginfo = biginfo_cb
 };
 
 int main(void)
@@ -436,12 +473,22 @@ int main(void)
 
 		printk("Waiting for periodic advertising...\n");
 		per_adv_found = false;
+		got_per_adv_data = false;
+		got_big_info = false;
 		err = k_sem_take(&sem_per_adv, K_FOREVER);
 		if (err) {
 			printk("failed (err %d)\n", err);
 			return 0;
 		}
 		printk("Found periodic advertising.\n");
+
+		//We can stop scanning after we found the periodic advertising (scanning is power hungry)
+		err = bt_le_scan_stop();
+		if (err != 0) {
+			printk("bt_le_scan_stop failed with error %d, resetting\n", err);
+			continue;
+		}
+
 
 		printk("Creating Periodic Advertising Sync...");
 		bt_addr_le_copy(&sync_create_param.addr, &per_addr);
