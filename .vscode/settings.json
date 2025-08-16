@@ -9,6 +9,11 @@
         "util.h": "c",
         "algorithm": "c",
         "array": "c",
-        "stdint.h": "c"
+        "stdint.h": "c",
+        "bluetooth.h": "c",
+        "bap.h": "c"
+    },
+    "nrf-connect.debugging.bindings": {
+        "${workspaceFolder}/build/ipc_radio": "Launch ipc_radio"
     }
 }
