@@ -6,7 +6,8 @@ I couldn't find the details of the broadcast online, so I made this.
 In the code comments is a breakdown of the raw data I got at each stage and what it means (alongside sources).
 
 Here is the broadcasting screen on my phone: 
-![Auracast broadcasting screen on phone](Auracast_broadcasting.jpg)
+
+<img src="Auracast_broadcasting.jpg" width="200" height="400" />
 
 ## Background on Auracast
 I recommend reading [this short paper](https://www.arendi.ch/media/download/aau00003_whitepaper_auracast_en.pdf) for some background.
