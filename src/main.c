@@ -3,7 +3,7 @@
  * and the iso_receive sample:
  * https://github.com/zephyrproject-rtos/zephyr/blob/main/samples/bluetooth/iso_receive/src/main.c
  * 
- * which are subject to the following License:
+ * which are subject to the following license:
  * 
  * Copyright (c) 2020-2024 Nordic Semiconductor ASA
  * 
@@ -11,7 +11,7 @@
  */
 #include <stdint.h>
 
-#include <zephyr/kernel.h> //kerenl services
+#include <zephyr/kernel.h> //kernel services
 #include <zephyr/bluetooth/gap.h>
 #include <zephyr/device.h>
 #include <zephyr/devicetree.h>
@@ -26,12 +26,10 @@
 
 ///Change this to your Auracast Broadcast name
 #define BROADCAST_NAME "Tomer"
-//Remeber to use COM8 to see logs.
 #define RAW_PERIODIC_DATA_MAX_LEN 200
 #define MAX_OCTETS_PER_FRAME 200
 #define BIS_ISO_CHAN_COUNT 2
-//originally 360000. Maybe change this to seconds and have a workqueue event enabling a global bool every X seconds
-#define CONFIG_ISO_PRINT_INTERVAL 360000
+#define CONFIG_ISO_PRINT_INTERVAL 360
 static uint32_t iso_recv_count = 0;
 static bool inc = true;
 
@@ -71,35 +69,35 @@ static void blink_timeout(struct k_work *work)
 }
 #endif
 
-/*The raw data results for high-quality broadcast I get are:
+/*
+The raw data results (extended scan raw data) for high-quality broadcast I get are:
 	The data is [6, 22, 82, 24, 7, 111, 34, 5, 22, 86, 24, 4, 0, 6, 48, 84, 111, 109, 101, 114]
 				 ^              ^   ^   ^ these 3 bytes that vary are the broadcast id.
 				 Length, AD Type (22; 0x16 in hex)--Service Data - 16-bit UUID,
  
 The Broadcast Audio Announcement Service UUID is 0x1852
-which is 0b11000 01010010 which is 24 82 -- you get the UUID transimetted backwards!
-It is trasmitted LSB (least significant bit) first.
+which is 0b11000 01010010 which is 24 82 -- you get the UUID transmitted backwards!
+It is transmitted LSB (least significant bit) first.
 See  3.7.2.1. in  BAP (https://www.bluetooth.com/specifications/specs/basic-audio-profile-1-0-1/) 
 to see where this is specified.
 
 So the second UUID is 86 24 -- flip order 24 86 -- 0b11000 01010110 -- 0b1100001010110 
 Which is 0x1856 which is the UUID for Public Broadcast Announcement service
 
-The public broadcast Annoucement is detailed in section 4 of PBP.
+The public broadcast announcement is detailed in section 4 of PBP.
 so 5 is the length, 22 is the type, 86 24 is the uuid.
-4 is the public bordcast annoucement features and 0 is the metadata length.
+4 is the public broadcast announcement features and 0 is the metadata length.
 We need to look at 4 bitwise. 4 is 0b100. Since all but the first 3 bits are RFU
-Reserved for future use. I am guessing the bits are transmitted in reverse order, that is 
-it is trasmitted LSB (least significant bit) first.
+Reserved for future use. The bits are transmitted in reverse order, that is 
+it is transmitted LSB (least significant bit) first.
 so that bit 0 is 0, bit 1 is 0, and bit 2 is 1.
 Which makes sense as that would mean no encryption,
 Standard Quality Public Broadcast Audio has no configuration present,
 while High Quality Public Broadcast Audio does have an audio configuration present.
 
 so 6 is the Length, 48 is the broadcast name type (from assigned numbers
-48 is 0x30 and 0x30=Broadcast_Name), and the reminder is the value
-the name of the broadcast.
-Note having the broadcast name here is requried by Bluetooth (see PBP section 5:
+48 is 0x30 and 0x30=Broadcast_Name), and the value is the name of the broadcast.
+Note having the broadcast name here is required by Bluetooth (see PBP section 5:
 https://www.bluetooth.com/wp-content/uploads/Files/Specification/HTML/11452-PBP-html5/out/en/index-en.html#UUID-de267bf3-7adb-d590-1d82-5cc803f2bf51) 
 
 From reading 4.3 in PBP:
@@ -113,11 +111,14 @@ From BAP: 3.7.2.1.1. Broadcast_ID:
 For each BIG, the Broadcast Source shall generate a Broadcast_ID according to the requirements 
 for random number generation as defined in Volume 3, Part H, Section 2 in [1]. 
 The Broadcast_ID shall not change for the lifetime of the BIG. 
+
+
+In data_cb() below we parse each LTV triplet in this raw data.
 */
 
 
 
-/// @brief This is called on each Length Type Value triplet In a particular scan result.
+/// @brief This is called on each Length Type Value (LTV) triplet in a particular scan result.
 /// When it returns true the parsing continues. When it returns false the parsing stops.
 ///
 /// 48 in hex is 0x30 which is Broadcast_Name in the Bluetooth assigned numbers.
@@ -240,13 +241,8 @@ static void term_cb(struct bt_le_per_adv_sync *sync,
 	k_sem_give(&sem_per_sync_lost);
 }
 
-//Note that using the "Improve compatibility" option for the Auracast broadcast on the phone still gives
-// us 2 separate left and right streams as opposed to 1 mono stream.
 
 /// @brief The callback on receving periodic adv report.
-/// @param sync 
-/// @param info 
-/// @param buf
 /// @remarks 
 ///We got output: 
 /// PER_ADV_SYNC[0]: [DEVICE]: 29:41:D7:F3:46:F9 (random), 
@@ -273,7 +269,7 @@ static void term_cb(struct bt_le_per_adv_sync *sync,
 /// Based on 6.12.5 Codec_Specific_Configuration LTV structures in BT assigned numbers, here this is:
 /// 8=  48000 Hz Sampling Frequency, 1 =  Use 10 ms codec frames, 
 /// 120 = Number of octets used per codec frame.
-/// Note this results in a bitrate of 96 kbps (see Table 3.17 here:
+/// Note this results in a bit rate of 96 kbps (see Table 3.17 here:
 /// https://www.bluetooth.com/wp-content/uploads/Files/Specification/HTML/16212-BAP-html5/out/en/index-en.html#UUID-90a900d2-de3f-acff-c7ff-d9961e742b4a).
 ///
 /// 23 = Metadata length for the subgroup (series of LTV values)
@@ -314,7 +310,7 @@ static void recv_cb(struct bt_le_per_adv_sync *sync,
 			bt_le_per_adv_sync_get_index(sync), le_addr, info->tx_power,
 			info->rssi, info->cte_type, buf->len);
 		
-		uint8_t *raw_data;
+		
 		uint16_t remaining;
 		//Note the 3 * here so that we don't overflow the buffer. 
 		//The +3 accounts for the NULL terminating and the end "]\n"
@@ -388,7 +384,7 @@ static void iso_recv(struct bt_iso_chan *chan, const struct bt_iso_recv_info *in
 		struct net_buf *buf)
 {
 	
-	//Note the buffer has non-zero length only when the phone is *actually* transmitting sound
+	//Note the buffer has non-zero length *only* when the phone is *actually* transmitting sound
 	//(say when a YouTube video plays; If the video is paused, the buffer has length zero again).
 
 	if ((iso_recv_count % CONFIG_ISO_PRINT_INTERVAL) == 0) {
@@ -400,38 +396,33 @@ static void iso_recv(struct bt_iso_chan *chan, const struct bt_iso_recv_info *in
 		printk("Incoming data channel %p flags 0x%x seq_num %u ts %u len %u data:[",
 			chan, info->flags, info->seq_num, info->ts, buf->len);
 		
-		//We need to do this as we want to use the net_buf later (maybe)
-		uint8_t copy_buf[MAX_OCTETS_PER_FRAME];
+		
 		uint8_t *raw_data;
-
 		uint16_t remaining;
 		//Note the 3 * here so that we don't overflow the buffer. 
 		//The +3 accounts for the NULL terminating and the end "]\n"
-		char out[MAX_OCTETS_PER_FRAME +3], *put = out; 
-		for (remaining = buf->len, raw_data = copy_buf; remaining>0; remaining--, raw_data++)
+		char out[MAX_OCTETS_PER_FRAME *3  + 3] = {0}, *put = out; 
+		for (raw_data = buf->data, remaining = buf->len; remaining>0; remaining--, raw_data++)
 		{
-			//Note this changes the net_buf
-			uint8_t byte = net_buf_simple_pull_u8(buf);
-			*raw_data = byte;
+			uint8_t byte = *raw_data;
 			put += sprintf(put, "%i, ", byte);
 			
 		}
 		strcat(put, "]\n");
 		printk("%s", out);
 		
-		/*The raw output (if we didn't filter it using ifs) is like:
+		/*The raw output (if we didn't filter it) is like:
 			flags 9 means BT_ISO_FLAGS_TS and BT_ISO_FLAGS_VALID (both the packet and timestamp are valid)
 			Incoming data channel 0x20008134 flags 0x9 seq_num 37959 ts 457271418 len X data: Y
 			Incoming data channel 0x20008148 flags 0x9 seq_num 37959 ts 457271418 len X data: Y
 			Incoming data channel 0x20008134 flags 0x9 seq_num 37960 ts 457281418 len X data: Y
 		*/
-		
-		//so that we print from both channels
-		inc = !inc;
-		if(inc){
-			iso_recv_count++;
-		}
-		
+	}
+
+	//slow down printing
+	inc = !inc;
+	if(inc){
+		iso_recv_count++;
 	}
 }
 

@@ -11,6 +11,7 @@
         "array": "c",
         "stdint.h": "c",
         "bluetooth.h": "c",
+        "iso.h": "c"
     },
     "nrf-connect.debugging.bindings": {
         "${workspaceFolder}/build/ipc_radio": "Launch ipc_radio"
