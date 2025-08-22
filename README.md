@@ -12,13 +12,14 @@ Here is the broadcasting screen on my phone:
 ## Background on Auracast
 I recommend reading [this short paper](https://www.arendi.ch/media/download/aau00003_whitepaper_auracast_en.pdf) for some background.
 
-But in short: Auracast is a technology to tune in to an isochronous stream(s) without ever connecting to the broadcaster.
+But in short:
+ 
+Auracast is a technology to tune in to an isochronous stream(s) without ever connecting to the broadcaster.
 The process is to do an extended scan (in this code the scan done is an extended scan)-> find broadcast by name
 -> sync to the periodic advertising
 -> sync to the BIG (Broadcast Isochronous group)
 -> sync to the BIS's (Broadcast Isochronous stream) we want (for stereo audio we want to connect to 2 streams).
-
-Where in each step we get information (in the form of reports) to help us achieve the next step.
+In each step we get information (in the form of reports) to help us achieve the next step.
 
 Some notes:
 
@@ -30,5 +31,4 @@ Some notes:
 
 * Only when audio is actively playing on the phone, is audio data transmitted in the broadcast.
 
-* Note that using the "Improve compatibility" option for the Auracast broadcast on the phone still gives us 2 separate left and right streams as opposed to 1 mono stream. The difference turning it on makes is that then it uses a 
-standard quality Public Broadcast audio configuration instead of a high quality one. 
+* Note that using the "Improve compatibility" option for the Auracast broadcast on the phone still gives us 2 separate left and right streams as opposed to 1 mono stream. The difference it makes is that it downgrades the broadcast from using a high quality Public Broadcast audio configuration to a standard quality one. 
