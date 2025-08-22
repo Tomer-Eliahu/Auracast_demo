@@ -12,17 +12,14 @@
 #include <stdint.h>
 
 #include <zephyr/kernel.h> //kerenl services
-
 #include <zephyr/bluetooth/gap.h>
 #include <zephyr/device.h>
 #include <zephyr/devicetree.h>
 #include <zephyr/drivers/gpio.h>
 #include <zephyr/bluetooth/bluetooth.h>
 #include <zephyr/sys/util.h>
-
 #include <zephyr/bluetooth/iso.h>
 
-#include <zephyr/bluetooth/audio/bap.h> //Get rid off if not needed
 
 #define TIMEOUT_SYNC_CREATE K_SECONDS(10)
 #define NAME_LEN            30
@@ -30,14 +27,16 @@
 ///Change this to your Auracast Broadcast name
 #define BROADCAST_NAME "Tomer"
 //Remeber to use COM8 to see logs.
-#define RAW_PERIODIC_DATA_MAX_LEN 80
+#define RAW_PERIODIC_DATA_MAX_LEN 200
+#define MAX_OCTETS_PER_FRAME 200
 #define BIS_ISO_CHAN_COUNT 2
-//originally 360000
-#define CONFIG_ISO_PRINT_INTERVAL 360000000000000
+//originally 360000. Maybe change this to seconds and have a workqueue event enabling a global bool every X seconds
+#define CONFIG_ISO_PRINT_INTERVAL 360000
+static uint32_t iso_recv_count = 0;
+static bool inc = true;
+
 static K_SEM_DEFINE(sem_big_sync, 0, BIS_ISO_CHAN_COUNT);
 static K_SEM_DEFINE(sem_big_sync_lost, 0, BIS_ISO_CHAN_COUNT);
-
-static uint8_t raw_periodic_data[RAW_PERIODIC_DATA_MAX_LEN] = {0}; //TODO: maybe get rid if not needed.
 
 static bool         got_per_adv_data;
 static bool 		got_big_info;
@@ -72,83 +71,58 @@ static void blink_timeout(struct k_work *work)
 }
 #endif
 
-//Results for high-quality broadcast are:
-// 23:08:02.347: discovered EXTENDED: BdAddr([74, 178, 179, 118, 40, 28]) and the direct addr is BdAddr([0, 0, 0, 0, 0, 0])
-// 23:08:02.347: The data is [6, 22, 82, 24, 58, 169, 91, 5, 22, 86, 24, 4, 0, 6, 48, 84, 111, 109, 101, 114]
-// 23:08:20.356: discovered EXTENDED: BdAddr([227, 22, 199, 247, 209, 3]) and the direct addr is BdAddr([0, 0, 0, 0, 0, 0])
-// 23:08:20.356: The data is [6, 22, 82, 24, 108, 141, 197, 5, 22, 86, 24, 4, 0, 6, 48, 84, 111, 109, 101, 114]
-// 17:49:01.722: discovered EXTENDED: BdAddr([30, 66, 139, 63, 217, 52]) and the direct addr is BdAddr([0, 0, 0, 0, 0, 0])
-// 17:49:01.722: The data is [6, 22, 82, 24, 7, 111, 34, 5, 22, 86, 24, 4, 0, 6, 48, 84, 111, 109, 101, 114]
-//                            ^               ^   ^    ^ I think these 3 bytes that vary might be the broadcast id.
-//                           Length, AD Type (22; 0x16 in hex)--Service Data - 16-bit UUID,
-// 
+/*The raw data results for high-quality broadcast I get are:
+	The data is [6, 22, 82, 24, 7, 111, 34, 5, 22, 86, 24, 4, 0, 6, 48, 84, 111, 109, 101, 114]
+				 ^              ^   ^   ^ these 3 bytes that vary are the broadcast id.
+				 Length, AD Type (22; 0x16 in hex)--Service Data - 16-bit UUID,
+ 
+The Broadcast Audio Announcement Service UUID is 0x1852
+which is 0b11000 01010010 which is 24 82 -- you get the UUID transimetted backwards!
+It is trasmitted LSB (least significant bit) first.
+See  3.7.2.1. in  BAP (https://www.bluetooth.com/specifications/specs/basic-audio-profile-1-0-1/) 
+to see where this is specified.
 
-	//The Broadcast Audio Announcement Service UUID is 0x1852
-	// which is 0b11000 01010010 which is 24 82 -- SO you get the UUID transimetted backgwards!
-	//I think this means it is trasmitted LSB (least significant bit) first.
-	//See  3.7.2.1. in  BAP to see where this is specified.
+So the second UUID is 86 24 -- flip order 24 86 -- 0b11000 01010110 -- 0b1100001010110 
+Which is 0x1856 which is the UUID for Public Broadcast Announcement service
 
-	//So the second UUID is 86 24 -- flip order 24 86 -- 0b11000 01010110 -- 0b1100001010110 
-	//Which is 0x1856 which is the UUID for Public Broadcast Announcement service
+The public broadcast Annoucement is detailed in section 4 of PBP.
+so 5 is the length, 22 is the type, 86 24 is the uuid.
+4 is the public bordcast annoucement features and 0 is the metadata length.
+We need to look at 4 bitwise. 4 is 0b100. Since all but the first 3 bits are RFU
+Reserved for future use. I am guessing the bits are transmitted in reverse order, that is 
+it is trasmitted LSB (least significant bit) first.
+so that bit 0 is 0, bit 1 is 0, and bit 2 is 1.
+Which makes sense as that would mean no encryption,
+Standard Quality Public Broadcast Audio has no configuration present,
+while High Quality Public Broadcast Audio does have an audio configuration present.
 
-	//The public broadcast Annoucement is detailed in section 4 of PBP.
-	// so 5 is the length, 22 is the type, 86 24 is the uuid.
-	//4 is the public bordcast annoucement features and 0 is the metadata length.
-	//We need to look at 4 bitwise. 4 is 0b100. Since all but the first 3 bits are RFU
-	//Reserved for future use. I am guessing the bits are transmitted in reverse order, that is 
-	//it is trasmitted LSB (least significant bit) first.
-	//so that bit 0 is 0, bit 1 is 0, and bit 2 is 1.
-	//Which makes sense as that would mean no encryption,
-	//Standard Quality Public Broadcast Audio has no configuration present,
-	//while High Quality Public Broadcast Audio DOES HAVE 
-	//0b1 = Audio configuration present.
+so 6 is the Length, 48 is the broadcast name type (from assigned numbers
+48 is 0x30 and 0x30=Broadcast_Name), and the reminder is the value
+the name of the broadcast.
+Note having the broadcast name here is requried by Bluetooth (see PBP section 5:
+https://www.bluetooth.com/wp-content/uploads/Files/Specification/HTML/11452-PBP-html5/out/en/index-en.html#UUID-de267bf3-7adb-d590-1d82-5cc803f2bf51) 
 
-	//so 6 is the Length, 48 is the broadcast name type (from assigned numbers
-	//48 is 0x30 and 0x30=Broadcast_Name), and the reminder is the value
-	//the name of the broadcast!
-	//Note having the broadcast name here is requried by Bluetooth (see PBP section 5:
-	// https://www.bluetooth.com/wp-content/uploads/Files/Specification/HTML/11452-PBP-html5/out/en/index-en.html#UUID-de267bf3-7adb-d590-1d82-5cc803f2bf51) 
+From reading 4.3 in PBP:
+If a PBS transmits the Public Broadcast Announcement with bit 2 of the 
+Public Broadcast Announcement features field set to a value of 0b1 
+(to show High Quality Public Broadcast Audio), 
+the advertising set used to transmit the Public Broadcast Announcement (i.e this extended advertising data)
+points to a BIG, which shall include at least one broadcast Audio Stream configuration setting listed in Table 4.2. 
 
-	//From reading 4.3 in PBP:
-	/*If a PBS transmits the Public Broadcast Announcement with bit 2 of the 
-	Public Broadcast Announcement features field set to a value of 0b1 
-	(to show High Quality Public Broadcast Audio), 
-	the advertising set used to transmit the Public Broadcast Announcement (i.e this extended advertising data)
-	points to a BIG, 
-	which shall include at least one broadcast Audio Stream configuration setting listed in Table 4.2. */
-
-	//CRITICAL NOTE: I think the only piece of data that can be used to point to something here
-	//MUST BE the broadcast id!
-
-	/*From BAP: 3.7.2.1.1. Broadcast_ID:
-	For each BIG, the Broadcast Source shall generate a Broadcast_ID according to the requirements 
-	for random number generation as defined in Volume 3, Part H, Section 2 in [1]. 
-	The Broadcast_ID shall not change for the lifetime of the BIG. */
-
-
-
-	//From the supplement to the Bluetooth core specification 
-	//(https://www.bluetooth.com/specifications/specs/core-specification-supplement-2/) section 1.11
-	//This means:
-	//
-	//Data Type: «Service Data - 16 bit UUID»
-	//UUID16, which may be followed by struct
-	//Description:
-	// The first value contains the 16 bit Service UUID. Any
-	// remainder contains additional service data.
+From BAP: 3.7.2.1.1. Broadcast_ID:
+For each BIG, the Broadcast Source shall generate a Broadcast_ID according to the requirements 
+for random number generation as defined in Volume 3, Part H, Section 2 in [1]. 
+The Broadcast_ID shall not change for the lifetime of the BIG. 
+*/
 
 
 
 /// @brief This is called on each Length Type Value triplet In a particular scan result.
 /// When it returns true the parsing continues. When it returns false the parsing stops.
 ///
-
 /// 48 in hex is 0x30 which is Broadcast_Name in the Bluetooth assigned numbers.
 /// This is the only way for us to identify the Auracast broadcast 
 /// as the (broadcast source) device address is randomized.
-/// @param data 
-/// @param user_data 
-/// @return 
 static bool data_cb(struct bt_data *data, void *user_data)
 {
 	char *name = user_data;
@@ -159,7 +133,6 @@ static bool data_cb(struct bt_data *data, void *user_data)
 		len = MIN(data->data_len, NAME_LEN - 1);
 		memcpy(name, data->data, len);
 		name[len] = '\0';
-		//printk("The name is %s \n", name);
 		return false;
 	default:
 		return true;
@@ -190,27 +163,25 @@ static void scan_recv(const struct bt_le_scan_recv_info *info,
 	
 	bool found_auracast= !strcmp(name, BROADCAST_NAME);
 	
-	if (found_auracast) {
+	if (found_auracast && !per_adv_found) {
 
-		if(!per_adv_found) //To avoid seeing these over and over
-		{
-			printk("Found AURACAST!\n");
-			
-			bt_addr_le_to_str(info->addr, le_addr, sizeof(le_addr));
-			printk("[DEVICE]: %s, AD evt type %u, Tx Pwr: %i, RSSI %i Broadcast name: %s "
-				"C:%u S:%u D:%u SR:%u E:%u Prim: %s, Secn: %s, "
-				"Interval: 0x%04x (%u ms), SID: %u\n",
-				le_addr, info->adv_type, info->tx_power, info->rssi, name,
-				(info->adv_props & BT_GAP_ADV_PROP_CONNECTABLE) != 0,
-				(info->adv_props & BT_GAP_ADV_PROP_SCANNABLE) != 0,
-				(info->adv_props & BT_GAP_ADV_PROP_DIRECTED) != 0,
-				(info->adv_props & BT_GAP_ADV_PROP_SCAN_RESPONSE) != 0,
-				(info->adv_props & BT_GAP_ADV_PROP_EXT_ADV) != 0,
-				phy2str(info->primary_phy), phy2str(info->secondary_phy),
-				info->interval, info->interval * 5 / 4, info->sid);
-		}
+		printk("Found AURACAST!\n");
+		
+		bt_addr_le_to_str(info->addr, le_addr, sizeof(le_addr));
+		printk("[DEVICE]: %s, AD evt type %u, Tx Pwr: %i, RSSI %i Broadcast name: %s "
+			"C:%u S:%u D:%u SR:%u E:%u Prim: %s, Secn: %s, "
+			"Interval: 0x%04x (%u ms), SID: %u\n",
+			le_addr, info->adv_type, info->tx_power, info->rssi, name,
+			(info->adv_props & BT_GAP_ADV_PROP_CONNECTABLE) != 0,
+			(info->adv_props & BT_GAP_ADV_PROP_SCANNABLE) != 0,
+			(info->adv_props & BT_GAP_ADV_PROP_DIRECTED) != 0,
+			(info->adv_props & BT_GAP_ADV_PROP_SCAN_RESPONSE) != 0,
+			(info->adv_props & BT_GAP_ADV_PROP_EXT_ADV) != 0,
+			phy2str(info->primary_phy), phy2str(info->secondary_phy),
+			info->interval, info->interval * 5 / 4, info->sid);
+	
 
-		if (!per_adv_found && info->interval) {
+		if (info->interval) {
 			uint32_t interval_us;
 			uint32_t timeout;
 
@@ -233,6 +204,7 @@ static void scan_recv(const struct bt_le_scan_recv_info *info,
 
 			k_sem_give(&sem_per_adv);
 		}
+		
 	}
 }
 
@@ -268,29 +240,8 @@ static void term_cb(struct bt_le_per_adv_sync *sync,
 	k_sem_give(&sem_per_sync_lost);
 }
 
-//Note that using the "Improve compatibility" option for the Auracast broadcast still gives
+//Note that using the "Improve compatibility" option for the Auracast broadcast on the phone still gives
 // us 2 separate left and right streams as opposed to 1 mono stream.
-
-//So what we do is pick 1 BIS (like left ear) 
-//and just get that one (because our headphone out is only capable of mono
-//audio ).
-
-//OR we can sync to BOTH BIS (The nordic example just added this today),
-//and downmix (or combine) the stereo into mono by doing
-// Mono_Sample = (Left_Sample + Right_Sample) / 2
-//If more details are needed see private notes. Our APP core has a FPU so we could do this.
-//Yes, it is possible to convert a stereo audio stream to mono while both streams are LC3 encoded. 
-//This involves decoding the stereo LC3 stream, merging the left and right channels into a single mono channel.
-//Note you have to decode first. Also note this requires being in sync with 2 ISO streams at the same time.
-// Base on https://github.com/zephyrproject-rtos/zephyr/blob/main/samples/bluetooth/iso_receive/src/main.c
-// It seems like you can defintely sync to multiple BISs at once.
-//Note: to synchornize BISs to each other just match together the SDU Synchronization Reference 
-//given on each audio frame from each BIS (I think; That is what I figured based on section 7 of BAP).
-//IMPORTANT: WE can get the number of BISs from BigInfo report (which we also get when we get 
-//periodic adv report). Rember BIS indexes start from 1.
-
-//TODO: maybe make this into a conditional compliation option: either recieve just LEFT ear BIS
-//OR #ifdef something, than convert stereo into mono.
 
 /// @brief The callback on receving periodic adv report.
 /// @param sync 
@@ -346,8 +297,6 @@ static void term_cb(struct bt_le_per_adv_sync *sync,
 /// 	6 = Length of the Codec_Specific_Configuration
 ///     5, 3, 2, 0, 0, 0, = Audio_Channel_Allocation (4-octet bitfield of Audio Location values) so here it is 0b10.
 /// 	Which is Front Right.
-
-//TODO: MAYBE USE bt_bap_base_get_base_from_ad from #include <zephyr/bluetooth/audio/bap.h>
 static void recv_cb(struct bt_le_per_adv_sync *sync,
 		    const struct bt_le_per_adv_sync_recv_info *info,
 		    struct net_buf_simple *buf)
@@ -359,7 +308,6 @@ static void recv_cb(struct bt_le_per_adv_sync *sync,
 		
 
 		bt_addr_le_to_str(info->addr, le_addr, sizeof(le_addr));
-		//bin2hex(buf->data, buf->len, data_str, sizeof(data_str));
 
 		printk("PER_ADV_SYNC[%u]: [DEVICE]: %s, tx_power %i, "
 			"RSSI %i, CTE %u, data length %u, data: [",
@@ -371,11 +319,10 @@ static void recv_cb(struct bt_le_per_adv_sync *sync,
 		//Note the 3 * here so that we don't overflow the buffer. 
 		//The +3 accounts for the NULL terminating and the end "]\n"
 		char out[3 * RAW_PERIODIC_DATA_MAX_LEN +3], *put = out; 
-		for (remaining = buf->len, raw_data =raw_periodic_data; remaining>0; remaining--, raw_data++)
+		for (remaining = buf->len; remaining>0; remaining--)
 		{
 			
 			uint8_t byte = net_buf_simple_pull_u8(buf);
-			*raw_data = byte;
 			put += sprintf(put, "%i, ", byte);
 			
 		}
@@ -440,24 +387,52 @@ static struct bt_le_per_adv_sync_cb sync_callbacks = {
 static void iso_recv(struct bt_iso_chan *chan, const struct bt_iso_recv_info *info,
 		struct net_buf *buf)
 {
-	char data_str[128];
-	size_t str_len;
-	uint32_t iso_recv_count = 0; 		
 	
 	//Note the buffer has non-zero length only when the phone is *actually* transmitting sound
 	//(say when a YouTube video plays; If the video is paused, the buffer has length zero again).
 
-	//TODO: CALL A FUNCTION TO PROCESS THE LC3 encoded audio and pass it to the hardware codec
-	//and then to the headphone out.
-
 	if ((iso_recv_count % CONFIG_ISO_PRINT_INTERVAL) == 0) {
-		str_len = bin2hex(buf->data, buf->len, data_str, sizeof(data_str));
-		printk("Incoming data channel %p flags 0x%x seq_num %u ts %u len %u: "
-		       "str_len:%i, data: %s\n", chan, info->flags, info->seq_num,
-		       info->ts, buf->len, str_len, data_str);
-	}
+		if(buf->len)
+		{
+			printk("Actively receiving audio!\n");
+		}
 
-	iso_recv_count++;
+		printk("Incoming data channel %p flags 0x%x seq_num %u ts %u len %u data:[",
+			chan, info->flags, info->seq_num, info->ts, buf->len);
+		
+		//We need to do this as we want to use the net_buf later (maybe)
+		uint8_t copy_buf[MAX_OCTETS_PER_FRAME];
+		uint8_t *raw_data;
+
+		uint16_t remaining;
+		//Note the 3 * here so that we don't overflow the buffer. 
+		//The +3 accounts for the NULL terminating and the end "]\n"
+		char out[MAX_OCTETS_PER_FRAME +3], *put = out; 
+		for (remaining = buf->len, raw_data = copy_buf; remaining>0; remaining--, raw_data++)
+		{
+			//Note this changes the net_buf
+			uint8_t byte = net_buf_simple_pull_u8(buf);
+			*raw_data = byte;
+			put += sprintf(put, "%i, ", byte);
+			
+		}
+		strcat(put, "]\n");
+		printk("%s", out);
+		
+		/*The raw output (if we didn't filter it using ifs) is like:
+			flags 9 means BT_ISO_FLAGS_TS and BT_ISO_FLAGS_VALID (both the packet and timestamp are valid)
+			Incoming data channel 0x20008134 flags 0x9 seq_num 37959 ts 457271418 len X data: Y
+			Incoming data channel 0x20008148 flags 0x9 seq_num 37959 ts 457271418 len X data: Y
+			Incoming data channel 0x20008134 flags 0x9 seq_num 37960 ts 457281418 len X data: Y
+		*/
+		
+		//so that we print from both channels
+		inc = !inc;
+		if(inc){
+			iso_recv_count++;
+		}
+		
+	}
 }
 
 static void iso_connected(struct bt_iso_chan *chan)
